@@ -1,0 +1,39 @@
+# ============================================================================
+#  terraform.tfvars.example
+#
+#  USAGE:
+#    cp terraform.tfvars.example terraform.tfvars
+#    # edit terraform.tfvars if any of these need to change
+#
+#  This file is committed to git as a template. The real terraform.tfvars
+#  is in .gitignore — it can contain sensitive values, so keep it local.
+# ============================================================================
+
+# Your laptop's public IP, in CIDR /32 form. Found via: curl https://checkip.amazonaws.com
+# IMPORTANT: if your IP changes (you switch wifi networks, restart your router,
+# travel, etc.), re-run `curl https://checkip.amazonaws.com`, update this value,
+# and run `terraform apply` again. Otherwise SSH will silently start refusing.
+my_public_ip = "183.82.24.206/32"
+
+# Region — matches what we created the key pair in
+aws_region = "us-east-1"
+
+# Project name prefix for every resource (so you can find them in AWS Console)
+project_name = "deployforge"
+
+# Environment label
+environment = "dev"
+
+# Key pair created earlier with: aws ec2 create-key-pair --key-name deployforge-key
+key_name = "deployforge-key"
+
+# 1 master + 2 workers is the standard demo. Drop to 1 worker to save ~$1/day.
+worker_count = 2
+
+# t3.medium: 2 vCPU, 4 GB RAM, ~$0.0416/hr in us-east-1.
+# Don't go smaller — kubeadm needs >=2GB RAM and t3.small (2GB) chokes when
+# system pods + the app + monitoring all run on it.
+instance_type = "t3.medium"
+
+# Root volume size. 30 GB is comfortable; container images and logs add up.
+root_volume_size_gb = 30
