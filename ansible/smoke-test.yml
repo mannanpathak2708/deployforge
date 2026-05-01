@@ -1,0 +1,53 @@
+---
+# ============================================================================
+#  smoke-test.yml — quick health check after site.yml + deploy-app.yml.
+#
+#  Reports node status, pod status across all namespaces, and hits the
+#  application's /actuator/health endpoint via the ingress controller.
+# ============================================================================
+
+- name: Cluster smoke test
+  hosts: master
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: kubectl get nodes -o wide
+      ansible.builtin.command: kubectl get nodes -o wide
+      changed_when: false
+      register: nodes
+
+    - name: Nodes
+      ansible.builtin.debug:
+        var: nodes.stdout_lines
+
+    - name: kubectl get pods -A
+      ansible.builtin.command: kubectl get pods -A
+      changed_when: false
+      register: pods
+
+    - name: All pods
+      ansible.builtin.debug:
+        var: pods.stdout_lines
+
+    - name: Hit Spring Boot /actuator/health via cluster IP
+      ansible.builtin.shell: |
+        IP=$(kubectl get svc taskmanager -n deployforge -o jsonpath='{.spec.clusterIP}')
+        curl -s "http://${IP}/actuator/health"
+      register: health
+      changed_when: false
+      failed_when: '"UP" not in health.stdout'
+
+    - name: Application health
+      ansible.builtin.debug:
+        msg: "{{ health.stdout }}"
+
+    - name: kubectl top nodes (resource usage)
+      ansible.builtin.command: kubectl top nodes
+      changed_when: false
+      failed_when: false
+      register: top_nodes
+
+    - name: Resource usage
+      ansible.builtin.debug:
+        var: top_nodes.stdout_lines

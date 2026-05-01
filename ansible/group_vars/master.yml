@@ -1,0 +1,11 @@
+# Master-only variables. Worker nodes will read these too via inventory
+# children groups, but only the master role uses them.
+
+# Address kube-apiserver advertises on. We use the master's PRIVATE IP so
+# workers on the same VPC can reach it without going via public IPs.
+# This is templated at runtime from the inventory's `private_ip` host_var.
+kubeadm_advertise_address: "{{ hostvars[groups['master'][0]]['private_ip'] }}"
+
+# kubeadm token TTL — 24h is comfortable; the worker join playbook fetches
+# a fresh one before joining anyway.
+kubeadm_token_ttl: "24h"

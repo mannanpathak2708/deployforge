@@ -59,6 +59,7 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+            <version>10.10.0</version>
         </dependency>
 
         <!-- Actuator + Prometheus metrics (for monitoring stack) -->

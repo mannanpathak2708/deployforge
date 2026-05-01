@@ -1,0 +1,119 @@
+---
+# ============================================================================
+#  roles/common/tasks/main.yml — base OS configuration for kubeadm.
+#
+#  Reference: https://kubernetes.io/docs/setup/production-environment/container-runtimes/
+#
+#  All tasks are idempotent — re-running this role is safe. Ansible's `-C`
+#  (check) mode also works because we use modules that report changed state.
+# ============================================================================
+
+- name: Wait for cloud-init to finish before doing anything
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+  retries: 6
+  delay: 10
+  register: cloud_init_result
+  until: cloud_init_result.rc == 0
+
+- name: Update apt cache (only if older than 1 hour)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  retries: 3
+  delay: 5
+  register: apt_cache
+  until: apt_cache is succeeded
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - software-properties-common
+      - jq
+      - net-tools
+      - htop
+      - python3-pip
+      - python3-kubernetes      # for ansible.builtin.k8s module on master
+      - bash-completion
+    state: present
+
+# ---------- Disable swap (kubeadm requirement) ----------
+# cloud-init disabled swap on first boot, but if someone re-enables it via
+# /etc/fstab edits, the next reboot would break the cluster. Belt and braces.
+
+- name: Ensure swap is disabled now
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Ensure swap stays disabled across reboots
+  ansible.posix.mount:
+    name: "{{ item }}"
+    fstype: swap
+    state: absent
+  loop:
+    - swap
+    - none
+  ignore_errors: true   # nothing to remove if there was never a swap entry
+
+# ---------- Kernel modules required by kubeadm/Calico ----------
+
+- name: Load required kernel modules at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+  notify: reload kernel modules
+
+- name: Load kernel modules now
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+# ---------- sysctl: networking knobs kubeadm requires ----------
+
+- name: Set required sysctl values
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+    mode: "0644"
+  notify: reload sysctl
+
+- name: Apply sysctl values immediately
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  loop:
+    - { name: "net.bridge.bridge-nf-call-iptables",  value: "1" }
+    - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+    - { name: "net.ipv4.ip_forward",                  value: "1" }
+
+# ---------- Hostname based on Role tag (overrides cloud-init's IP-based one) ----------
+
+- name: Set a stable hostname based on the inventory group
+  ansible.builtin.hostname:
+    name: >-
+      {{ 'deployforge-master' if inventory_hostname in groups['master']
+         else 'deployforge-worker-' + (groups['workers'].index(inventory_hostname) + 1) | string }}
+
+- name: Make sure /etc/hosts has the right entry for our new hostname
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s+'
+    line: "127.0.1.1 {{ ansible_hostname }}"
+    state: present

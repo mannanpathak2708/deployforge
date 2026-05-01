@@ -1,20 +1,20 @@
 # ============================================================================
-#  security_groups.tf — kubeadm port requirements baked into SGs.
+#  security_groups.tf - kubeadm port requirements baked into SGs.
 #
 #  Reference: https://kubernetes.io/docs/reference/networking/ports-and-protocols/
 #
 #  Three SGs:
-#    1. ssh                — port 22 from your laptop only
-#    2. k8s_control_plane  — control plane ports (master only)
-#    3. k8s_worker         — worker ports (kubelet, NodePort range)
+#    1. ssh                - port 22 from your laptop only
+#    2. k8s_control_plane  - control plane ports (master only)
+#    3. k8s_worker         - worker ports (kubelet, NodePort range)
 #
 #  The master gets BOTH ssh + control_plane. Workers get ssh + worker.
 #  All cluster nodes also need to talk to each other freely on the pod/service
-#  network — handled by self-referencing rules.
+#  network - handled by self-referencing rules.
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-#  1. SSH access — locked to your IP
+#  1. SSH access - locked to your IP
 # ----------------------------------------------------------------------------
 
 resource "aws_security_group" "ssh" {
@@ -46,12 +46,12 @@ resource "aws_security_group" "ssh" {
 # ----------------------------------------------------------------------------
 #  2. Control-plane (master) security group
 #     Ports per kubeadm docs:
-#       6443       — kube-apiserver (HTTPS)
-#       2379-2380  — etcd server client API
-#       10250      — kubelet API
-#       10257      — kube-controller-manager
-#       10259      — kube-scheduler
-#       30000-32767 — NodePort services (master can also serve them)
+#       6443       - kube-apiserver (HTTPS)
+#       2379-2380  - etcd server client API
+#       10250      - kubelet API
+#       10257      - kube-controller-manager
+#       10259      - kube-scheduler
+#       30000-32767 - NodePort services (master can also serve them)
 # ----------------------------------------------------------------------------
 
 resource "aws_security_group" "k8s_control_plane" {
@@ -60,7 +60,7 @@ resource "aws_security_group" "k8s_control_plane" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "kube-apiserver — accessed by kubectl from operator + workers"
+    description = "kube-apiserver - accessed by kubectl from operator + workers"
     from_port   = 6443
     to_port     = 6443
     protocol    = "tcp"
@@ -68,7 +68,7 @@ resource "aws_security_group" "k8s_control_plane" {
   }
 
   ingress {
-    description = "etcd client/peer — internal only"
+    description = "etcd client/peer - internal only"
     from_port   = 2379
     to_port     = 2380
     protocol    = "tcp"
@@ -76,7 +76,7 @@ resource "aws_security_group" "k8s_control_plane" {
   }
 
   ingress {
-    description = "kubelet API — workers and master"
+    description = "kubelet API - workers and master"
     from_port   = 10250
     to_port     = 10250
     protocol    = "tcp"
@@ -91,7 +91,7 @@ resource "aws_security_group" "k8s_control_plane" {
     self        = true
   }
 
-  # NodePort services — used by kube-prometheus-stack and the app's ingress
+  # NodePort services - used by kube-prometheus-stack and the app's ingress
   ingress {
     description = "NodePort range"
     from_port   = 30000
@@ -127,8 +127,8 @@ resource "aws_security_group" "k8s_control_plane" {
 # ----------------------------------------------------------------------------
 #  3. Worker security group
 #     Ports:
-#       10250        — kubelet API (master scrapes this)
-#       30000-32767  — NodePort range
+#       10250        - kubelet API (master scrapes this)
+#       30000-32767  - NodePort range
 #       Calico needs IP-in-IP (protocol 4) or VXLAN (UDP 4789) between nodes
 # ----------------------------------------------------------------------------
 
@@ -188,7 +188,7 @@ resource "aws_security_group_rule" "control_plane_to_worker" {
   protocol                 = "-1"
   source_security_group_id = aws_security_group.k8s_control_plane.id
   security_group_id        = aws_security_group.k8s_worker.id
-  description              = "Master → workers (all ports)"
+  description              = "Master to workers all ports"
 }
 
 resource "aws_security_group_rule" "worker_to_control_plane" {
@@ -198,5 +198,5 @@ resource "aws_security_group_rule" "worker_to_control_plane" {
   protocol                 = "-1"
   source_security_group_id = aws_security_group.k8s_worker.id
   security_group_id        = aws_security_group.k8s_control_plane.id
-  description              = "Workers → master (all ports)"
+  description              = "Workers to master all ports"
 }

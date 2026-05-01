@@ -1,0 +1,42 @@
+# ============================================================================
+#  group_vars/all.yml — variables applied to every host.
+#
+#  Centralising versions here means you upgrade Kubernetes by changing one
+#  line, not hunting through 6 playbooks. This is the single source of truth.
+# ============================================================================
+
+# ---------- Kubernetes ----------
+k8s_version: "1.29"                       # major.minor for apt repo
+k8s_full_version: "1.29.15-1.1"            # exact pkg version (apt pin)
+k8s_pod_cidr: "192.168.0.0/16"            # Calico's default; matches manifests
+k8s_service_cidr: "10.96.0.0/12"          # kubeadm default
+
+# ---------- Container runtime ----------
+containerd_version: "1.7.*"               # accept any 1.7.x point release
+runc_version: "1.1.*"
+
+# ---------- CNI plugin ----------
+calico_version: "v3.27.3"
+calico_manifest_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml"
+
+# ---------- Helm ----------
+helm_version: "v3.14.4"
+
+# ---------- NGINX ingress controller ----------
+ingress_nginx_chart_version: "4.10.0"
+
+# ---------- kube-prometheus-stack ----------
+kube_prometheus_stack_version: "58.2.1"
+grafana_admin_password: "admin"           # CHANGE THIS for any real environment
+
+# ---------- local-path provisioner ----------
+local_path_provisioner_version: "v0.0.27"
+
+# ---------- ECR ----------
+# These are produced by Stage 2 (Terraform); Stage 4 (CI/CD) writes them too.
+# Override on the command line: ansible-playbook ... -e ecr_registry=...
+aws_account_id: "560205084884"
+aws_region: "us-east-1"
+ecr_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+ecr_repo: "deployforge/taskmanager"
+app_image: "{{ ecr_registry }}/{{ ecr_repo }}:latest"

@@ -25,3 +25,12 @@ vault-password.txt
 secret.yaml
 !secret.example.yaml
 .env
+
+# Build/distribution artifacts
+*.zip
+tfplan
+
+# Build artifacts
+*.zip
+tfplan
+ansible/join-command.sh

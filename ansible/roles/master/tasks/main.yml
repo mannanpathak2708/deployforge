@@ -1,0 +1,236 @@
+---
+# ============================================================================
+#  roles/master/tasks/main.yml — promote this node to a control-plane.
+#
+#  Idempotency strategy: we check for /etc/kubernetes/admin.conf as the
+#  marker. If present, kubeadm has already initialised the cluster and we
+#  skip init. All other steps are naturally idempotent.
+# ============================================================================
+
+# ------------------------------------------------------------------
+#  1. Initialise the control plane (only on first run)
+# ------------------------------------------------------------------
+
+- name: Check if kubeadm has already been initialised
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_kubeconfig
+
+- name: Render kubeadm config file
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: /tmp/kubeadm-config.yaml
+    mode: "0644"
+  when: not admin_kubeconfig.stat.exists
+
+- name: Pre-pull control-plane images (speeds up init, makes failures clearer)
+  ansible.builtin.command: kubeadm config images pull --kubernetes-version v{{ k8s_full_version | regex_replace('-.*$', '') }}
+  changed_when: false
+  when: not admin_kubeconfig.stat.exists
+
+- name: Run kubeadm init
+  ansible.builtin.command: kubeadm init --config /tmp/kubeadm-config.yaml --upload-certs
+  register: kubeadm_init
+  when: not admin_kubeconfig.stat.exists
+
+- name: Show kubeadm init output (for debugging if it fails)
+  ansible.builtin.debug:
+    var: kubeadm_init.stdout_lines
+  when: kubeadm_init.changed
+
+# ------------------------------------------------------------------
+#  2. Set up kubectl access for the ubuntu user
+# ------------------------------------------------------------------
+
+- name: Create .kube directory for ubuntu user
+  ansible.builtin.file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0750"
+
+- name: Copy admin kubeconfig to ubuntu user
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"
+    remote_src: true
+
+# ------------------------------------------------------------------
+#  3. Install Calico CNI
+#     Without a CNI, the master shows NotReady and CoreDNS pods stay Pending.
+# ------------------------------------------------------------------
+
+- name: Check if Calico is already installed
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get ds -n kube-system calico-node
+  register: calico_check
+  changed_when: false
+  failed_when: false
+
+- name: Apply Calico manifest
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f {{ calico_manifest_url }}
+  when: calico_check.rc != 0
+
+- name: Wait for Calico DaemonSet to be ready (up to 5 min)
+  ansible.builtin.command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    rollout status daemonset/calico-node -n kube-system --timeout=300s
+  changed_when: false
+
+# ------------------------------------------------------------------
+#  4. Install Helm (used for ingress + monitoring stack)
+# ------------------------------------------------------------------
+
+- name: Check if helm is installed
+  ansible.builtin.command: helm version --short
+  register: helm_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Helm
+  ansible.builtin.shell: |
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  when: helm_check.rc != 0
+  args:
+    executable: /bin/bash
+
+# ------------------------------------------------------------------
+#  5. Install local-path-provisioner so PVCs can dynamically provision
+#     storage on the host filesystem. Without this, the postgres
+#     StatefulSet's PVC would stay Pending forever.
+# ------------------------------------------------------------------
+
+- name: Apply local-path-provisioner
+  ansible.builtin.command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f
+    https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_provisioner_version }}/deploy/local-path-storage.yaml
+  register: lpp_apply
+  changed_when: "'created' in lpp_apply.stdout"
+
+- name: Set local-path as the default StorageClass
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf patch storageclass local-path \
+      -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  changed_when: false
+
+# ------------------------------------------------------------------
+#  Helm-based addons + post-join setup
+#  Gated behind master_skip_helm so the FIRST master pass (before workers
+#  exist) skips these. The SECOND master pass (after worker join) runs them.
+# ------------------------------------------------------------------
+
+- name: Helm-based addons (ingress, monitoring) - run after workers exist
+  when: not (master_skip_helm | default(false))
+  block:
+    # ------------------------------------------------------------------
+    #  6. NGINX ingress controller (for the app's Ingress resource)
+    # ------------------------------------------------------------------
+
+    - name: Add ingress-nginx Helm repo
+      kubernetes.core.helm_repository:
+        name: ingress-nginx
+        repo_url: https://kubernetes.github.io/ingress-nginx
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install ingress-nginx via Helm
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        chart_version: "{{ ingress_nginx_chart_version }}"
+        release_namespace: ingress-nginx
+        create_namespace: true
+        values:
+          controller:
+            service:
+              type: NodePort
+              nodePorts:
+                http: 30080
+                https: 30443
+            # Run only on workers — masters stay clean
+            nodeSelector:
+              kubernetes.io/os: linux
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # ------------------------------------------------------------------
+    #  7. kube-prometheus-stack (Prometheus + Grafana + AlertManager + node-exporter)
+    # ------------------------------------------------------------------
+
+    - name: Add prometheus-community Helm repo
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install kube-prometheus-stack via Helm
+      kubernetes.core.helm:
+        name: monitoring
+        chart_ref: prometheus-community/kube-prometheus-stack
+        chart_version: "{{ kube_prometheus_stack_version }}"
+        release_namespace: monitoring
+        create_namespace: true
+        values:
+          grafana:
+            adminPassword: "{{ grafana_admin_password }}"
+            service:
+              type: NodePort
+              nodePort: 30030
+            # Persist dashboards across pod restarts
+            persistence:
+              enabled: true
+              size: 1Gi
+            # Pre-load some dashboards
+            defaultDashboardsEnabled: true
+          prometheus:
+            prometheusSpec:
+              # Don't try to enforce ServiceMonitor labels - pick up any in the cluster
+              serviceMonitorSelectorNilUsesHelmValues: false
+              podMonitorSelectorNilUsesHelmValues: false
+              # Modest retention so it doesn't fill the disk
+              retention: 7d
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 512Mi
+                limits:
+                  memory: 1Gi
+            service:
+              type: NodePort
+              nodePort: 30090
+          alertmanager:
+            enabled: true
+            alertmanagerSpec:
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # ------------------------------------------------------------------
+    #  8. Persist the kubeadm join command for use by Stage 4
+    #     (and so re-runs of worker join playbook can pick it up).
+    # ------------------------------------------------------------------
+
+    - name: Generate fresh kubeadm join command
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: kubeadm_join_cmd
+      changed_when: false
+
+    - name: Save join command to a file on the master
+      ansible.builtin.copy:
+        content: "{{ kubeadm_join_cmd.stdout }}"
+        dest: /tmp/kubeadm_join_cmd.sh
+        mode: "0600"
+
+    - name: Fetch the join command back to the local Ansible controller
+      ansible.builtin.fetch:
+        src: /tmp/kubeadm_join_cmd.sh
+        dest: ./join-command.sh
+        flat: true
+      when: not (master_skip_helm | default(false))

@@ -1,0 +1,147 @@
+---
+# ============================================================================
+#  deploy-app.yml — deploys the Spring Boot app to the cluster.
+#
+#  Why separate from site.yml: the app deploy is the thing you'll re-run most
+#  often (every code change before CI/CD is wired up). Keeping it independent
+#  means a 30-second re-run instead of a 20-minute full bootstrap.
+#
+#  Prerequisites:
+#    - site.yml has run successfully (cluster is up)
+#    - The Stage 1 k8s manifests are at ../k8s/base/
+#    - You've built and pushed an image to ECR (or are using a public test image)
+# ============================================================================
+
+- name: Deploy DeployForge app to the cluster
+  hosts: master
+  become: true
+  vars:
+    k8s_manifests_src: "{{ playbook_dir }}/../k8s/base"
+    k8s_manifests_dest: /tmp/deployforge-k8s
+    namespace: deployforge
+
+  tasks:
+
+    # ----------------------------------------------------------------
+    # 1. Copy manifests from local Mac to master
+    # ----------------------------------------------------------------
+
+    - name: Ensure manifests directory exists on master
+      ansible.builtin.file:
+        path: "{{ k8s_manifests_dest }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy k8s manifests to master
+      ansible.builtin.copy:
+        src: "{{ k8s_manifests_src }}/"
+        dest: "{{ k8s_manifests_dest }}/"
+        mode: "0644"
+
+    # ----------------------------------------------------------------
+    # 2. Generate the real Secret from variables (the committed
+    #    secret.example.yaml has placeholder values).
+    # ----------------------------------------------------------------
+
+    - name: Render real Secret with actual DB credentials
+      ansible.builtin.copy:
+        dest: "{{ k8s_manifests_dest }}/secret.yaml"
+        mode: "0600"
+        content: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: taskmanager-secrets
+            namespace: {{ namespace }}
+          type: Opaque
+          stringData:
+            DB_USERNAME: "taskuser"
+            DB_PASSWORD: "{{ db_password | default('changeme-please-override') }}"
+            POSTGRES_USER: "taskuser"
+            POSTGRES_PASSWORD: "{{ db_password | default('changeme-please-override') }}"
+            POSTGRES_DB: "taskdb"
+
+    # ----------------------------------------------------------------
+    # 3. Get an ECR login and create an imagePullSecret in the namespace
+    # ----------------------------------------------------------------
+
+    - name: Install AWS CLI on master if missing (needed for ECR auth)
+      ansible.builtin.apt:
+        name:
+          - unzip
+        state: present
+      become: true
+
+    - name: Check if AWS CLI is installed
+      ansible.builtin.command: aws --version
+      register: aws_check
+      failed_when: false
+      changed_when: false
+
+    - name: Install AWS CLI v2
+      ansible.builtin.shell: |
+        set -e
+        cd /tmp
+        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+        unzip -q awscliv2.zip
+        ./aws/install --update
+        rm -rf aws awscliv2.zip
+      when: aws_check.rc != 0
+      args:
+        executable: /bin/bash
+
+    - name: Apply Kustomize base (creates namespace, configmap, app, postgres, etc.)
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        apply -k {{ k8s_manifests_dest }}
+      register: kustomize_apply
+      changed_when: "'configured' in kustomize_apply.stdout or 'created' in kustomize_apply.stdout"
+
+    - name: Apply the rendered Secret (overrides the example)
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        apply -f {{ k8s_manifests_dest }}/secret.yaml
+      register: secret_apply
+      changed_when: "'configured' in secret_apply.stdout or 'created' in secret_apply.stdout"
+
+    # ----------------------------------------------------------------
+    # 4. Wait for the rollout
+    # ----------------------------------------------------------------
+
+    - name: Wait for postgres StatefulSet to be ready (up to 5 min)
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        rollout status statefulset/postgres -n {{ namespace }} --timeout=300s
+      changed_when: false
+
+    - name: Wait for taskmanager Deployment to be ready (up to 5 min)
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        rollout status deployment/taskmanager -n {{ namespace }} --timeout=300s
+      changed_when: false
+
+    # ----------------------------------------------------------------
+    # 5. Print useful info
+    # ----------------------------------------------------------------
+
+    - name: Get app endpoints
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get svc -n {{ namespace }}
+      changed_when: false
+      register: svc_info
+
+    - name: Application services
+      ansible.builtin.debug:
+        var: svc_info.stdout_lines
+
+    - name: Get NGINX ingress NodePort
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get svc -n ingress-nginx ingress-nginx-controller
+      changed_when: false
+      register: ingress_svc
+
+    - name: "Ingress controller (use master public IP and NodePort)"
+      ansible.builtin.debug:
+        var: ingress_svc.stdout_lines

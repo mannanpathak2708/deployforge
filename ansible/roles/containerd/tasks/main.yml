@@ -1,0 +1,79 @@
+---
+# ============================================================================
+#  roles/containerd/tasks/main.yml — install containerd as the CRI.
+#
+#  Why containerd, not Docker:
+#    - Kubernetes 1.24+ removed dockershim; Docker is no longer a supported
+#      container runtime for kubelet directly.
+#    - containerd is what Docker uses under the hood anyway.
+#    - It's smaller, faster to start, and the official kubeadm-recommended
+#      runtime.
+#
+#  We install via the Docker apt repo (which ships containerd.io), generate
+#  a default config, then flip SystemdCgroup=true — the single most common
+#  mis-step that causes kubelet to fail with "container runtime is not
+#  running" errors on Ubuntu 22.04.
+# ============================================================================
+
+- name: Add Docker apt key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+    force: true
+  retries: 3
+  delay: 5
+
+- name: Add Docker apt repo (we only want containerd.io from it)
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    filename: docker
+    state: present
+    update_cache: true
+
+- name: Install containerd.io
+  ansible.builtin.apt:
+    name: containerd.io
+    state: present
+
+- name: Ensure /etc/containerd exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Generate default containerd config (always overwrite — ubuntu's default disables CRI)
+  ansible.builtin.shell: |
+    set -o pipefail
+    containerd config default > /etc/containerd/config.toml
+  args:
+    executable: /bin/bash
+  changed_when: true
+  notify: restart containerd
+
+# kubelet on Ubuntu 22.04 uses systemd as the cgroup driver. The container
+# runtime MUST match — otherwise kubelet refuses to start pods with cryptic
+# errors. This is the #1 cause of "Init:0/1" pod stuck states.
+- name: Set SystemdCgroup = true in containerd config
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: restart containerd
+
+- name: Ensure containerd is started and enabled
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# Quick smoke test — fails loudly if the runtime is broken
+- name: Verify containerd is responsive
+  ansible.builtin.command: ctr version
+  changed_when: false
+  register: ctr_check
+
+- name: Show containerd version
+  ansible.builtin.debug:
+    msg: "{{ ctr_check.stdout_lines | first }}"

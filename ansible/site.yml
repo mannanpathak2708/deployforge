@@ -1,0 +1,81 @@
+---
+# ============================================================================
+#  site.yml — the master playbook. Runs all stages in order.
+#
+#  Usage:
+#    ansible-playbook site.yml
+#
+#  Idempotent: re-running is safe. First run takes ~15-20 minutes; subsequent
+#  runs take ~2 minutes if nothing has changed.
+#
+#  Stages:
+#    1. Common base config on every node (~2 min)
+#    2. containerd installed on every node (~3 min)
+#    3. kubeadm/kubelet/kubectl installed on every node (~2 min)
+#    4. kubeadm init on master + Calico/Helm/ingress/monitoring (~10 min)
+#    5. kubeadm join on workers (~3 min)
+#    6. Deploy the app (separate playbook, see deploy-app.yml)
+# ============================================================================
+
+- name: Stage 3.1 - Base OS configuration on every node
+  hosts: k8s
+  become: true
+  gather_facts: true
+  roles:
+    - common
+
+- name: Stage 3.2 - Install containerd runtime on every node
+  hosts: k8s
+  become: true
+  roles:
+    - containerd
+
+- name: Stage 3.3 - Install Kubernetes binaries on every node
+  hosts: k8s
+  become: true
+  roles:
+    - kubernetes
+
+- name: Stage 3.4 - Bring up the control plane on master
+  hosts: master
+  become: true
+  vars:
+    master_skip_helm: true
+  roles:
+    - master
+
+- name: Stage 3.5 - Join workers to the cluster
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+- name: Stage 3.6 - Install Helm-based addons on master (workers exist now)
+  hosts: master
+  become: true
+  vars:
+    master_skip_helm: false
+  roles:
+    - master
+
+- name: Stage 3.6 - Final cluster status report
+  hosts: master
+  become: false
+  tasks:
+    - name: Show cluster nodes
+      ansible.builtin.command: kubectl get nodes -o wide
+      changed_when: false
+      register: cluster_nodes
+
+    - name: Cluster nodes
+      ansible.builtin.debug:
+        var: cluster_nodes.stdout_lines
+
+    - name: Show all pods across all namespaces
+      ansible.builtin.command: kubectl get pods -A
+      changed_when: false
+      register: cluster_pods
+
+    - name: All pods
+      ansible.builtin.debug:
+        var: cluster_pods.stdout_lines

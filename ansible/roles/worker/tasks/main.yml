@@ -1,0 +1,41 @@
+---
+# ============================================================================
+#  roles/worker/tasks/main.yml — join this node as a worker.
+#
+#  Idempotency marker: /etc/kubernetes/kubelet.conf only exists after a
+#  successful join. If present, skip — re-running join would error.
+# ============================================================================
+
+- name: Check if this node is already joined
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Generate a fresh kubeadm join command (run on master)
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_cmd_fresh
+  delegate_to: "{{ groups['master'][0] }}"
+  run_once: true
+  changed_when: false
+  when: not kubelet_conf.stat.exists
+
+- name: Run kubeadm join on this worker
+  ansible.builtin.command: "{{ join_cmd_fresh.stdout }} --node-name {{ ansible_hostname }}"
+  when: not kubelet_conf.stat.exists
+  register: join_result
+
+- name: Show join output
+  ansible.builtin.debug:
+    var: join_result.stdout_lines
+  when: join_result.changed | default(false)
+
+- name: Wait for the node to register with the API server
+  ansible.builtin.command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get node {{ ansible_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: node_ready
+  delegate_to: "{{ groups['master'][0] }}"
+  retries: 30
+  delay: 10
+  until: node_ready.stdout == "True"
+  changed_when: false

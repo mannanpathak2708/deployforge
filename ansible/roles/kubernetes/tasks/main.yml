@@ -1,0 +1,71 @@
+---
+# ============================================================================
+#  roles/kubernetes/tasks/main.yml — install kubeadm + kubelet + kubectl.
+#
+#  All three tools must match in major.minor version. We pin to 1.29 (per
+#  group_vars/all.yml) and `apt-mark hold` them so an `apt upgrade` doesn't
+#  silently move the cluster to a newer version mid-run.
+#
+#  Reference: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+# ============================================================================
+
+- name: Add Kubernetes apt key (community-owned keyring per pkgs.k8s.io)
+  ansible.builtin.get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key"
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+    mode: "0644"
+    force: true
+  retries: 3
+  delay: 5
+
+- name: Add Kubernetes apt repo
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /"
+    filename: kubernetes
+    state: present
+    update_cache: true
+
+- name: Install kubelet, kubeadm, kubectl at pinned version
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ k8s_full_version }}"
+      - "kubeadm={{ k8s_full_version }}"
+      - "kubectl={{ k8s_full_version }}"
+    state: present
+    update_cache: true
+    allow_change_held_packages: true
+
+# This stops `apt upgrade` from accidentally upgrading the cluster.
+# kubeadm has strict version skew rules — uncoordinated upgrades break things.
+- name: Hold kube* packages at current version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Make sure kubelet is enabled (it won't actually run until kubeadm init/join)
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: started
+  # kubelet may crash-loop until kubeadm runs — that's expected, ignore the failure
+  ignore_errors: true
+
+- name: kubectl bash completion (nice viva touch)
+  ansible.builtin.shell: |
+    kubectl completion bash > /etc/bash_completion.d/kubectl
+    chmod 644 /etc/bash_completion.d/kubectl
+  args:
+    creates: /etc/bash_completion.d/kubectl
+
+- name: Add `k` alias for kubectl in ubuntu's bashrc
+  ansible.builtin.lineinfile:
+    path: /home/ubuntu/.bashrc
+    line: "{{ item }}"
+    state: present
+  loop:
+    - "alias k=kubectl"
+    - "complete -F __start_kubectl k"
