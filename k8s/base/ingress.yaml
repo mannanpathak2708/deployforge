@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: taskmanager
+  namespace: deployforge
+  annotations:
+    # The NGINX Ingress controller is installed by Ansible (Stage 3).
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+    # Replace with your own domain or the master node's public DNS.
+    # If no DNS, port-forward via kubectl or use the master's EIP:port-mapping.
+    - host: taskmanager.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: taskmanager
+                port:
+                  number: 80

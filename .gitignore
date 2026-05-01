@@ -1,0 +1,27 @@
+target/
+*.class
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# Ansible
+ansible/inventory.ini
+*.retry
+vault-password.txt
+
+# Secrets
+*.pem
+*.key
+secret.yaml
+!secret.example.yaml
+.env

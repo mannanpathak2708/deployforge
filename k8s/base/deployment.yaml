@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskmanager
+  namespace: deployforge
+  labels:
+    app: taskmanager
+    app.kubernetes.io/name: taskmanager
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0          # zero-downtime updates
+  selector:
+    matchLabels:
+      app: taskmanager
+  template:
+    metadata:
+      labels:
+        app: taskmanager
+        app.kubernetes.io/name: taskmanager
+      annotations:
+        # Prometheus auto-discovery; the kube-prometheus-stack ServiceMonitor
+        # also scrapes this endpoint via the Service selector.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      # imagePullSecrets used when pulling private images from ECR. Created by Ansible.
+      imagePullSecrets:
+        - name: ecr-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # nonroot from distroless
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: taskmanager
+          # Image tag is patched at deploy time by the GitHub Actions workflow.
+          # Format: <ECR_REGISTRY>/deployforge/taskmanager:<git-sha>
+          image: ghcr.io/deployforge/taskmanager:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: taskmanager-config
+            - secretRef:
+                name: taskmanager-secrets
+          # Spring Boot Actuator exposes /actuator/health/liveness and /readiness.
+          # Liveness restarts a wedged JVM; readiness gates traffic during startup.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30        # allows up to 150s for cold starts
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 30

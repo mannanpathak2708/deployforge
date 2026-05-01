@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# RBAC for CI/CD: GitHub Actions authenticates as the `deployer` ServiceAccount
+# and is granted only the permissions needed to roll out the app — nothing
+# cluster-wide. This is the principle of least privilege in practice.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployer
+  namespace: deployforge
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer
+  namespace: deployforge
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer
+  namespace: deployforge
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: deployforge
+roleRef:
+  kind: Role
+  name: deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+# Long-lived token Secret bound to the `deployer` SA. The token is harvested by
+# Ansible after `kubectl apply` and stored as a GitHub Actions repo secret
+# (KUBE_CONFIG) so the workflow can run `kubectl set image`.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deployer-token
+  namespace: deployforge
+  annotations:
+    kubernetes.io/service-account.name: deployer
+type: kubernetes.io/service-account-token

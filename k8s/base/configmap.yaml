@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskmanager-config
+  namespace: deployforge
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+  LOG_LEVEL: "INFO"
+  # Database hostname resolves through the postgres Service in the same namespace
+  DB_URL: "jdbc:postgresql://postgres.deployforge.svc.cluster.local:5432/taskdb"
