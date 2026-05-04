@@ -22,7 +22,6 @@ pipeline {
     options {
         timeout(time: 20, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        timestamps()
         ansiColor('xterm')
     }
 
@@ -42,12 +41,6 @@ pipeline {
         // Jenkins credentials IDs (configured in Jenkins UI)
         AWS_CREDS        = 'aws-creds'
         SSH_CREDS        = 'ec2-ssh-key'
-    }
-
-    triggers {
-        // Webhook trigger configured via "GitHub hook trigger for GITScm polling"
-        // checkbox in the job config. ngrok forwards GitHub's webhook to Jenkins.
-        githubPush()
     }
 
     stages {
