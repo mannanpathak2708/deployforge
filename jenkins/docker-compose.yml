@@ -1,0 +1,32 @@
+# ============================================================================
+#  Jenkins on Docker — DeployForge CI/CD
+#
+#  Runs the official jenkins/jenkins:lts-jdk17 image with:
+#    - Docker socket mounted so jobs can build Docker images
+#    - Persistent volume for Jenkins home (config, jobs, credentials)
+#    - Port 8080 (Jenkins UI) and 50000 (build agents)
+# ============================================================================
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    platform: linux/arm64
+    container_name: deployforge-jenkins
+    restart: unless-stopped
+    user: root                # so we can install docker CLI inside
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # Mount the Mac's Docker socket so Jenkins can build/push images.
+      # On macOS Docker Desktop, this socket is forwarded automatically.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount your SSH key so Jenkins can SSH to the EC2 master for kubectl
+      - ${HOME}/.ssh/deployforge-key.pem:/var/jenkins_home/.ssh/deployforge-key.pem:ro
+    environment:
+      - JENKINS_OPTS=--httpPort=8080
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+
+volumes:
+  jenkins_home:
